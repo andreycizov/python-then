@@ -1,0 +1,10 @@
+filter:
+ type: Const
+ file: filter.yaml
+body:
+ type: Python
+ file: body.py
+ if_exc: repeat
+ # then arguments allow us to just run a python expression and then continue doing anything else
+ then:
+  bbb

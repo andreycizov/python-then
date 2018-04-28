@@ -1,0 +1,6 @@
+filter:
+ type: Const
+ file: filter.yaml
+body:
+ type: Const
+ file: body.yaml
