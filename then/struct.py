@@ -1,3 +1,5 @@
+import shutil
+from tempfile import mkdtemp
 from typing import List, Dict, Union
 import os
 import yaml
@@ -21,25 +23,14 @@ class Id:
 
 
 class Body:
-    def __init__(self, body: Dict):
-        self.body = body
+    def __init__(self, val: Dict):
+        self.val = val
 
     def merge(self, another: 'Body') -> 'Body':
-        return Body({**self.body, **another.body})
-
-    @classmethod
-    def deserialize(cls, body, workdir):
-        r = {
-            'type': body['type']
-        }
-
-        if 'file' in body:
-            r['body'] = deserialize_yaml(os.path.join(workdir, body['file']))
-
-        return Body(r)
+        return Body({**self.val, **another.val})
 
     def __repr__(self):
-        return f'Body{self.body}'
+        return f'Body{self.val}'
 
 
 class Filter:
@@ -50,10 +41,10 @@ class Filter:
         return f'Filter({self.body})'
 
     def match(self, body: Body):
-        if self.body.body['type'] == 'Const':
-            for k, v in self.body.body['body'].items():
-                if k in body.body:
-                    if body.body[k] == self.body.body['body'][k]:
+        if self.body.val['type'] == 'Const':
+            for k, v in self.body.val['body'].items():
+                if k in body.val:
+                    if body.val[k] == self.body.val['body'][k]:
                         pass
                     else:
                         return False
@@ -97,40 +88,102 @@ def deserialize_yaml(path) -> Union[dict, str]:
 
 
 class Structure:
-    def __init__(self, rules: Dict[Id, Rule] = None):
-        self.rules = rules if rules else {}  # type: Dict[Id, Rule]
+    def __init__(self, workdir):
+        self.workdir = workdir
 
-    @classmethod
-    def deserialize(cls, workdir):
-        files = os.listdir(workdir)
+        os.makedirs(workdir, 0o700, exist_ok=True)
 
-        rules = {}
+    def _rule_names(self) -> List[Id]:
+        r1: List[str] = os.listdir(self.workdir)
 
-        for file in files:
-            file_dir = os.path.join(workdir, file)
+        r2 = [Id(x) for x in r1 if not x.startswith('.')]
 
-            body = deserialize_yaml(os.path.join(file_dir, 'conf.yaml'))
+        return r2
 
-            filter_obj = Filter(Body.deserialize(body['filter'], file_dir))
-            rule_obj = Body.deserialize(body['body'], file_dir)
+    def _body_deser(self, body, workdir) -> Body:
+        r = {
+            'type': body['type']
+        }
 
-            rule = Rule(Id(file), filter_obj, rule_obj)
+        if 'file' in body:
+            r['body'] = deserialize_yaml(os.path.join(workdir, body['file']))
 
-            rules[rule.id] = rule
-        return Structure(rules)
+        return Body(r)
+
+    def _body_serde(self, body: Body, workdir, context) -> dict:
+        if body.val['type'] == 'Const':
+            return body.val
+        elif body.val['type'] == 'Python':
+            fn = context + '.py'
+            with open(os.path.join(workdir, fn), 'w+b') as f_out:
+                f_out.write(body.val['body'].encode())
+            return {
+                'type': 'Python',
+                'file': fn
+            }
+
+        else:
+            raise NotImplementedError(str(body))
+
+    def _rule_deser(self, id: Id):
+        # todo if we fail at any of these steps - just ignore this rule amd maybe log an error
+        file_dir = os.path.join(self.workdir, id.id)
+
+        body = deserialize_yaml(os.path.join(file_dir, 'conf.yaml'))
+
+        filter_obj = Filter(self._body_deser(body['filter'], file_dir))
+
+        # todo check if the filter is runnable
+        rule_obj = self._body_deser(body['body'], file_dir)
+
+        rule = Rule(id, filter_obj, rule_obj)
+
+        return rule
 
     def list(self) -> List[Rule]:
-        return list(self.rules.values())
+        r = []
+        for x in self._rule_names():
+            r.append(self._rule_deser(x))
+
+        import pprint
+        pprint.pprint(r)
+        return r
 
     def match(self, body: Body) -> List[Body]:
-        return [r.body for r in self.rules.values() if r.filter.match(body)]
+        return [r.body for r in self.list() if r.filter.match(body)]
 
     def add(self, r: Rule):
-        self.rules[r.id] = r
+        # we always rewrite the rule even if it exists.
+
+        rule_dir = os.path.join(self.workdir, r.id.id)
+
+        rule_temp_dir = mkdtemp()
+        try:
+
+            f_b = self._body_serde(r.filter.body, rule_temp_dir, 'filter')
+            b_b = self._body_serde(r.body, rule_temp_dir, 'body')
+
+            conf = {
+                'filter': f_b,
+                'body': b_b
+            }
+
+            with open(os.path.join(rule_temp_dir, 'conf.yaml'), 'w+') as f_out:
+                yaml.dump(conf, f_out)
+        except:
+            os.unlink(rule_temp_dir)
+            raise
+        else:
+            os.rename(rule_temp_dir, rule_dir)
 
     def remove(self, id: Id):
-        if id in self.rules:
-            del self.rules[id]
+        rule_temp_dir = mkdtemp()
 
-    def __repr__(self):
-        return 'Structure(' + '\n'.join(repr(x) for x in self.rules) + ')'
+        try:
+            os.rename(os.path.join(self.workdir, id.id), os.path.join(rule_temp_dir, 'tmp'))
+        except FileNotFoundError:
+            shutil.rmtree(rule_temp_dir)
+
+
+def __repr__(self):
+    return 'Structure(' + '\n'.join(repr(x) for x in self.rules) + ')'

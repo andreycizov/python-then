@@ -1,12 +1,61 @@
 import argparse
 import logging
 import socket
+from typing import Optional
 
 from then.impl.backend.udp.server import set_logging
-from then.impl.backend.udp.util import _recv_parse_buffer
 from then.impl.serde.entity import rule_json_from
 from then.impl.serde.util import deserialize_json, serialize_json, pack_bytes, unpack_bytes
-from then.struct import Rule, Body, Filter, Id, deserialize_yaml
+from then.struct import Body, Id, deserialize_yaml
+
+
+class FrontendTCPClient:
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+
+        self._socket: Optional[socket.socket] = None
+
+    @property
+    def socket(self):
+        if self._socket is None:
+            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._socket.connect((self.host, self.port))
+        return self._socket
+
+    def _send(self, pld):
+        self.socket.send(pack_bytes(
+            serialize_json(pld)
+        ))
+
+    def _recv(self):
+        return deserialize_json(unpack_bytes(self.socket.recv(2 ** 22)))
+
+    def worker_list(self):
+        self._send({'t': 'w'})
+
+        return sorted([rule_json_from(x) for x in self._recv()], key=lambda x: x.id)
+
+    def rule_list(self):
+        self._send({'t': 'l'})
+
+        return sorted([rule_json_from(x) for x in self._recv()], key=lambda x: x.id)
+
+    def rule_remove(self, id: Id) -> bool:
+        self._send({'t': 'r', 'i': id.id})
+        rep = self._recv()
+
+        return rep['o']
+
+    def job_add(self, id: Id, body: Body):
+        self._send({'t': 'j', 'i': id.id, 'b': body})
+
+        rep = self._recv()
+
+        assert rep['i'] == id.id, (rep['i'], id.id)
+        assert rep['o'], str(rep)
+
+        return rep
 
 
 def client_main(action, host, port, **kwargs):
@@ -71,7 +120,7 @@ def prepare_argparse():
     parser.add_argument(
         '--port',
         dest='port',
-        default=1029,
+        default=9870,
         type=int,
         help='server listen port (default: %(default)s)'
     )

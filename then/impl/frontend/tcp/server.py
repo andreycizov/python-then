@@ -12,6 +12,7 @@ class TCPFrontendServer(Pollable):
     def __init__(self, addr, port, s: Structure, q: Queue):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setblocking(0)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             self.sock.bind((addr, port))
         except OSError as e:
@@ -48,7 +49,7 @@ class TCPFrontendServer(Pollable):
                         client_sock.send(pack_bytes(serialize_json({'t': 'ja', 'i': msg['i'], 'o': True})))
                     elif msg['t'] == 'l':
                         client_sock.send(pack_bytes(serialize_json([
-                            {'i': x.id.id, 'f': x.filter.body.body, 'b': x.body.body} for x in self.s.list()
+                            {'i': x.id.id, 'f': x.filter.body.val, 'b': x.body.val} for x in self.s.list()
                         ])))
                     else:
                         logging.getLogger('tcp_front').error(str(msg))

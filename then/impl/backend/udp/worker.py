@@ -26,7 +26,7 @@ class UDPWorkerChannel(WorkerChannel):
             serialize_json({
                 't': 'p',
                 'w': self.worker_id.id,
-                'f': self.filter.body.body,
+                'f': self.filter.body.val,
                 'cv': capacity.version,
                 'cc': capacity.current,
                 'cm': capacity.max,
@@ -71,7 +71,7 @@ class UDPWorkerChannel(WorkerChannel):
                 'cc': capacity.current,
                 'cm': capacity.max,
                 'ji': job_id.id,
-                'ps': [{'i': x.id.id, 't': x.task.body} for x in payloads],
+                'ps': [{'i': x.id.id, 't': x.task.val} for x in payloads],
             })
         )
 
@@ -93,8 +93,8 @@ def worker_bin(worker_id, herz, ttl, wait, workdir, max_capacity, listen, port, 
     sock_send.settimeout(0)
 
     filter = Filter(Body({'type': 'Const', 'body': {}})) if filter is None else Filter(Body(filter))
-    assert 'type' in filter.body.body
-    assert 'body' in filter.body.body
+    assert 'type' in filter.body.val
+    assert 'body' in filter.body.val
 
     set_logging()
 

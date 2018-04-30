@@ -36,8 +36,8 @@ class UDPQueueCommChannel(QueueCommChannel):
                 serialize_json({
                     't': 'j',
                     'i': job.id.id,
-                    'r': job.rule.body,
-                    'b': job.task.body,
+                    'r': job.rule.val,
+                    'b': job.task.val,
                 })
             )
 
@@ -83,7 +83,7 @@ def server(herz, ttl, wait, workdir, listen, port):
         min_acks=wait,
         herz=herz
     )
-    s = Structure.deserialize(os.path.join(workdir, 'triggers'))
+    s = Structure(os.path.join(workdir, 'triggers'))
 
     q = Queue(
         c,
@@ -94,7 +94,7 @@ def server(herz, ttl, wait, workdir, listen, port):
 
     tfs = TCPFrontendServer(
         '127.0.0.1',
-        1029,
+        9870,
         s,
         q,
     )
@@ -135,6 +135,9 @@ def server(herz, ttl, wait, workdir, listen, port):
     p = ServerPollingUnit(1. / c.herz)
 
     p.run()
+
+    # todo: on exit, save the current ``Queue`` state into a file
+    # todo: on entry, restore the current ``Queue`` state from a file
 
 
 def prepare_argparse():

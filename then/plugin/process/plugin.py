@@ -20,8 +20,8 @@ class ProcessTaskPoolChannel(TaskPoolChannel):
 class ProcessWorker(TaskPoolWorker):
     def message(self, task: Job) -> List[NextJob]:
         print('xzec', task)
-        if task.task.body.get('b', None) == 'd':
-            ctr = task.task.body.get('ctr')
+        if task.task.val.get('b', None) == 'd':
+            ctr = task.task.val.get('ctr')
             if ctr < 100:
                 return [NextJob(Id(uuid.uuid4().hex), Body({'b': 'd', 'ctr': ctr + 1}))]
             else:
@@ -48,7 +48,7 @@ class ProcessWorkerPlugin(WorkerPlugin):
 
     @classmethod
     def init(cls, comm: WorkerPluginChannel, config: Body) -> 'ProcessWorkerPlugin':
-        return ProcessWorkerPlugin(comm, int(config.body.get('parallel', 32)))
+        return ProcessWorkerPlugin(comm, int(config.val.get('parallel', 32)))
 
     def job_assigned(self, job: Job):
         self.task_pool.task_put(job.id.id, job)
