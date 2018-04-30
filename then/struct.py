@@ -7,6 +7,7 @@ import yaml
 
 class Id:
     def __init__(self, id: str):
+        assert isinstance(id, str)
         self.id = id
 
     def __repr__(self):

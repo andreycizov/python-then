@@ -57,11 +57,13 @@ class Worker:
 
 
 class Workers:
-    def __init__(self, config: Config, workdir):
+    def __init__(self, config: Config, workdir, tmpdir):
         self.config = config
         self.workdir = workdir
+        self.tmpdir = tmpdir
 
         os.makedirs(self.workdir, exist_ok=True)
+        os.makedirs(self.tmpdir, exist_ok=True)
 
         self.caps: Dict[Id, Capacity] = {}
         self.pings: Dict[Id, int] = {}
@@ -74,10 +76,9 @@ class Workers:
 
         for x in items:
             self.pings[x.id] = self.pings.get(x.id, self.config.max_pings) - 1
-
             if self.pings[x.id] < 0:
                 self.pings[x.id] = self.config.max_pings
-                yield x
+                yield x.id
 
     def capacity_get(self, worker_id: Id):
         old = self.caps.get(worker_id, Capacity(-1, 0, 0))
@@ -99,7 +100,9 @@ class Workers:
     def _list(self) -> Iterable[Id]:
         for x in os.listdir(self.workdir):
             if not x.startswith('.'):
-                yield Id(x)
+                suff = '.yaml'
+                if x.endswith(suff):
+                    yield Id(x[:-len(suff)])
 
     def _path(self, worker_id: Id):
         return os.path.join(self.workdir, f'{worker_id.id}.yaml')
@@ -107,7 +110,7 @@ class Workers:
     def ping(self, worker_id: Id):
         self.pings[worker_id] = self.config.max_pings
 
-    def register(self, worker_id: Id, filter: Filter, capacity: Capacity) -> bool:
+    def register(self, worker_id: Id, filter: Filter, capacity: Capacity) -> Tuple[bool, bool]:
         contents = {
             'f': filter.body.val,
         }
@@ -115,11 +118,19 @@ class Workers:
         self.capacity_set(worker_id, capacity)
         self.ping(worker_id)
 
+        # f_out, f_path = tempfile.mkstemp(dir=self.tmpdir)
+
         try:
-            with open(self._path(worker_id), 'x') as f_out:
+            # with os.fdopen(f_out, mode='w') as f_out:
+            with open(self._path(worker_id), mode='x') as f_out:
                 yaml.dump(contents, f_out)
 
-            return True
+            # this is a <small> race condition
+            # existed = worker_id in self
+            # os.rename(f_path, self._path(worker_id))
+
+            # return True, not existed
+            return True, True
         except FileExistsError:
             with open(self._path(worker_id), 'r') as f_in:
                 contents_old = yaml.load(f_in)
@@ -130,12 +141,12 @@ class Workers:
                         f_out.write(bytes)
                         yaml.dump(contents, f_out)
 
-                    return True
+                    return True, True
                 except IOError:
                     logging.getLogger('server.workers').error(f'{self._path(worker_id)} not longer exists')
 
-                    return False
-            return True
+                    return False, False
+            return True, False
 
     def get(self, worker_id: Id) -> Optional[Worker]:
         try:
@@ -149,6 +160,7 @@ class Workers:
                     Filter(Body(fv)),
                 )
         except FileNotFoundError:
+            logging.getLogger('server.workers').error(f'{self._path(worker_id)} could not find')
             return None
         except (KeyError, ValueError):
             logging.getLogger('server.workers').error(f'{self._path(worker_id)} could not parse')
@@ -159,13 +171,14 @@ class Workers:
             it = self.get(id)
             if it is None:
                 continue
-            yield id
+            yield it
 
     def unregister(self, worker_id: Id) -> bool:
         try:
             os.unlink(self._path(worker_id))
             return True
         except FileNotFoundError:
+            logging.getLogger('server.workers').error(f'{self._path(worker_id)} could not find')
             return False
         finally:
             if worker_id in self.caps:
@@ -181,9 +194,12 @@ class Jobs:
     ASSIGNED = 'assigned'
     RUNNING = 'running'
 
-    def __init__(self, config: Config, workdir):
+    def __init__(self, config: Config, workdir, tmpdir):
         self.config = config
         self.workdir = workdir
+        self.tmpdir = tmpdir
+
+        os.makedirs(self.tmpdir, exist_ok=True)
 
         os.makedirs(os.path.join(self.workdir, self.PENDING), mode=0o700, exist_ok=True)
         os.makedirs(os.path.join(self.workdir, self.DONE), mode=0o700, exist_ok=True)
@@ -191,7 +207,8 @@ class Jobs:
         os.makedirs(os.path.join(self.workdir, self.RUNNING), mode=0o700, exist_ok=True)
 
     def _path(self, context: str, jid: Id):
-        return os.path.join(self.workdir, context, f'{jid.id}.yaml')
+        jid = jid.id
+        return os.path.join(self.workdir, context, f'{jid}.yaml')
 
     def _exists(self, context: str, jid: Id):
         return os.path.exists(self._path(context, jid))
@@ -204,11 +221,11 @@ class Jobs:
         if job.id in self:
             return False
 
-        f_out, f_path = tempfile.mkstemp()
+        f_out, f_path = tempfile.mkstemp(dir=self.tmpdir)
 
         try:
             # todo we may be able to create a pending job, yet then find it in done
-            with f_out:
+            with os.fdopen(f_out, mode='w') as f_out:
                 yaml.dump(
                     {
                         'r': job.rule.val,
@@ -237,9 +254,11 @@ class Jobs:
 
         try:
             os.unlink(self._path(self.ASSIGNED, job_id))
+            return True
         except FileNotFoundError:
             try:
                 os.unlink(self._path(self.RUNNING, job_id))
+                return True
             except FileNotFoundError:
                 return False
 
@@ -248,12 +267,12 @@ class Jobs:
             logging.getLogger('server.jobs').error(f'[0] job unknown {job_id}')
             return False
 
-        f_out, f_path = tempfile.mkstemp()
+        f_out, f_path = tempfile.mkstemp(dir=self.tmpdir)
 
         try:
             # todo the issue is that we can not move a file atomically
             # todo make sure there is no one assigning a task at the same time
-            with f_out:
+            with os.fdopen(f_out, mode='w') as f_out:
                 yaml.dump(
                     {
                         'w': worker_id.id
@@ -275,7 +294,7 @@ class Jobs:
             except OSError:
                 pass
 
-    def running(self, job_id: Id) -> bool:
+    def running(self, job_id: Id, worker_id: Id) -> bool:
         if job_id not in self:
             logging.getLogger('server.jobs').error(f'[1] job unknown {job_id}')
             return False
@@ -318,12 +337,12 @@ class Jobs:
         if job is None:
             return False
 
-        f_out, f_path = tempfile.mkstemp()
+        f_out, f_path = tempfile.mkstemp(dir=self.tmpdir)
 
         try:
             # todo the issue is that we can not move a file atomically
             # todo make sure there is no one assigning a task at the same time
-            with f_out:
+            with os.fdopen(f_out, mode='w') as f_out:
                 yaml.dump(
                     {
                         'r': job.rule.val,
@@ -335,9 +354,8 @@ class Jobs:
 
             os.rename(f_path, self._path(self.DONE, job_id))
             os.unlink(self._path(self.PENDING, job_id))
+            os.unlink(self._path(self.RUNNING, job_id))
 
-            # todo repairs of subsequent is essentially iterating over all DONE
-            # todo and checking if they are known.
             for x in subsequent:
                 self.create(x)
 
@@ -352,6 +370,42 @@ class Jobs:
         # todo: find all subsequent in DONE and check if they are KNOWN
         # todo: find all pending and check if any of them are DONE - remove them
         pass
+
+        assigned = self.list_assigned()
+        pending = self.list_pending()
+        running = self.list_running()
+        done = self._list(self.DONE)
+
+        for job_id in done:
+            if job_id in [x for x, _ in assigned]:
+                os.unlink(self._path(self.ASSIGNED, job_id))
+                logging.getLogger('server.jobs.repair.done').error(f'done but assigned {job_id}')
+            if job_id in [x for x, _ in running]:
+                os.unlink(self._path(self.RUNNING, job_id))
+                logging.getLogger('server.jobs.repair.done').error(f'done but running {job_id}')
+            if job_id in [x for x in pending]:
+                logging.getLogger('server.jobs.repair.done').error(f'done but pending {job_id}')
+                os.unlink(self._path(self.PENDING, job_id))
+
+            with open(self._path(self.DONE, job_id)) as f_in:
+                obj = yaml.load(f_in)
+
+                subs = [(Id(x['i']), x) for x in obj['s']]
+
+                for sub_id, sub in subs:
+                    if sub_id not in self:
+                        logging.getLogger('server.jobs.repair.done').error(f'done but unsubsq {job_id} {sub_id}')
+                        self.create(Job(sub_id, Body(sub['r']), Body(sub['t'])))
+
+    def repair_missing_worker(self, workers: Workers):
+        for job_id, worker_id in self.list_assigned():
+            if worker_id not in workers:
+                self.resign(job_id, worker_id)
+                logging.getLogger('server.jobs.repair.missing_worker').error(f'assigned {job_id} {worker_id}')
+
+        for job_id, worker_id in self.list_running():
+            if worker_id not in workers:
+                logging.getLogger('server.jobs.repair.missing_worker').error(f'running {job_id} {worker_id}')
 
     def _list(self, context):
         files = os.listdir(os.path.join(self.workdir, context))
@@ -409,6 +463,14 @@ class Queue:
 
         self.matcher = matcher
 
+        # v2
+
+        self.js = Jobs(config, './q/jobs/', './tmp')
+        self.ws = Workers(config, './q/workers', './tmp')
+
+        self.js.repair_done()
+        self.js.repair_missing_worker(self.ws)
+
     def serialize(self, workdir):
         pass
 
@@ -417,122 +479,81 @@ class Queue:
         pass
 
     def tick(self):
-        worker_ids = [x for x in self.workers.keys()]
+        for worker_id in self.ws.tick():
+            self.worker_unregister(worker_id)
 
-        for worker_id in worker_ids:
-            worker_id: Id
+        for job_id, worker_id in self.js.list_assigned():
+            # todo wait for the required number of pings
+            job = self.js._get_pending(job_id)
 
-            w = self.workers[worker_id]
-
-            w.pings_remaining -= 1
-
-            if w.pings_remaining <= 0:
-                # todo: log the worker timeout
-                self.worker_unregister(worker_id)
-
-        for x in WaitingAck.exec(self.pending_ack, min_acks=self.config.min_acks):
-            x: JobKeeping
-            self.comm.job(x.worker_id, x.job)
+            if job:
+                self.comm.job(worker_id, job)
 
     def worker_register(self, worker: WorkerState):
-        logging.getLogger('server.workers').error(f'Registered {worker}')
-        if worker.id in self.workers:
-            return
+        exists, is_new = self.ws.register(worker.id, worker.filter, worker.capacity)
 
-        worker.pings_remaining = self.config.max_pings
+        if is_new:
+            logging.getLogger('server.workers').error(f'Registered {worker}')
 
-        self.workers[worker.id] = worker
+        if exists:
 
-        jobs_to_assign = [y for y in self.pending.values() if worker.filter.match(y.body)]
-        for i, x in enumerate(jobs_to_assign):
-            if i == worker.capacity.remaining:
-                break
+            jobs_to_assign = [y for y in self.js.list_pending()]
+            jobs_to_assign1 = [self.js._get_pending(y) for y in jobs_to_assign]
+            jobs_to_assign2: List[Job] = [y for y in jobs_to_assign1 if y]
+            jobs_to_assign3 = [y for y in jobs_to_assign2 if worker.filter.match(y.body)]
+            for i, x in enumerate(jobs_to_assign3):
+                if i == worker.capacity.remaining:
+                    break
 
-            self._job_assign(x)
+                self.js.assign(x.id, worker.id)
 
     def worker_ping(self, worker_id: Id, filter: Filter, capacity: Capacity):
-        if worker_id not in self.workers:
-            self.worker_register(WorkerState(worker_id, filter, capacity, [], pings_remaining=self.config.max_pings))
-
-        self._worker_capacity(worker_id, capacity)
-
-        self.workers[worker_id].pings_remaining = self.config.max_pings
+        self.worker_register(WorkerState(worker_id, filter, capacity, [], 0))
 
     def worker_unregister(self, worker_id: Id):
-        logging.getLogger('server.workers').error(f'Unregistered {worker_id}')
-        if worker_id not in self.workers:
-            return
+        if self.ws.unregister(worker_id):
+            logging.getLogger('server.workers').error(f'Unregistered {worker_id}')
 
-        to_resign = self.workers[worker_id].assigned
+            x1 = [jid for jid, wid in self.js.list_assigned() if wid == worker_id]
+            x2 = [jid for jid, wid in self.js.list_running() if wid == worker_id]
 
-        for x in to_resign:
-            self._job_resign(worker_id, x)
-
-        to_remove_acks = [x for x, v in self.pending_ack.items() if v.x.worker_id == worker_id]
-
-        for x in to_remove_acks:
-            del self.pending_ack[x]
-
-        del self.workers[worker_id]
-
-        self.st.worker_forget(worker_id)
+            for x in x1 + x2:
+                self.js.resign(x, worker_id)
+                self._job_assign(x)
+        # todo to_remove_acks = [x for x, v in self.pending_ack.items() if v.x.worker_id == worker_id]
 
     def worker_job_ack(self, worker_id: Id, capacity: Capacity, job_id: Id):
         logging.getLogger('server.trace.ack').debug(f'{worker_id} {job_id}')
-
-        # job ack just allows us
-        # the job had been received by the worker
-        if worker_id not in self.workers:
-            return
-
-        self._worker_capacity(worker_id, capacity)
-
-        if job_id in self.workers[worker_id].assigned:
-            if job_id in self.pending_ack:
-                del self.pending_ack[job_id]
+        self.js.running(job_id, worker_id)
 
     def worker_job_nack(self, worker_id: Id, capacity: Capacity, job_id: Id):
         logging.getLogger('server.trace.nack').debug(f'{worker_id} {job_id}')
         if worker_id not in self.workers:
             return
 
-        self._worker_capacity(worker_id, capacity)
-
-        if job_id in self.workers[worker_id].assigned:
-            j = self._job_resign(worker_id, job_id)
-            self._job_assign(j)
+        if self.js.resign(job_id, worker_id):
+            self._job_assign(job_id)
 
     def worker_job_finish(self, worker_id: Id, capacity: Capacity, job_id: Id, payloads: List[NextJob]):
         logging.getLogger('server.trace.finish').debug(f'{worker_id} {job_id}')
         # stop worker spamming us if it was demoted
         self.comm.job_finish_ack(worker_id, job_id)
 
-        # if a worker was unregistered since we no longer should have assigned to job to it
-        if worker_id not in self.workers:
-            return
+        self.ws.capacity_set(worker_id, capacity)
 
-        self._worker_capacity(worker_id, capacity)
+        subs: List[Job] = []
 
-        logging.getLogger('server.trace').debug(f'0 {worker_id} {job_id}')
+        for x in payloads:
+            subs += list(self._task_match(x.id, x.task))
 
-        if job_id in self.workers[worker_id].assigned:
-            logging.getLogger('server.trace').debug(f'1 {worker_id} {job_id}')
+        self.js.done(job_id, subs)
 
-            j = self._job_resign(worker_id, job_id)
+        # todo: notify of newer items for every sub
 
-            self._job_done(j)
+        for sub in subs:
+            self._job_assign(sub.id)
 
-            pending_keys = [x for x in self.pending.keys()]
-            for k in pending_keys:
-                self._job_assign(self.pending[k])
-
-            for payload in payloads:
-                self.task_match(payload.id, payload.task)
-
-    def task_match(self, id: Id, task: Body):
-        if self._job_known(id):
-            return
-
+    def _task_match(self, id: Id, task: Body):
         for i, rule in enumerate(self.matcher.match(task)):
             # todo: job creation is idempotent
             # todo: therefore if the matcher configuration had changed
@@ -541,57 +562,36 @@ class Queue:
             # todo: I don't personally think it's important
             # todo: 1) addition of a job will create a job at n+1
             # todo: 2) deletion of a match will forget to re-create the match
-            self._job_assign(Job(Id(id.id + '/' + str(i)), rule, task))
+            yield Job(Id(id.id + '_' + str(i)), rule, task)
 
-    def _worker_capacity(self, worker_id: Id, capacity: Capacity):
-        worker = self.workers[worker_id]
-
-        if worker.capacity.version < capacity.version:
-            worker.capacity = capacity
+    def task_match(self, id: Id, task: Body):
+        for x in self._task_match(id, task):
+            self.js.create(x)
+            self._job_assign(x.id)
 
     def _job_known(self, id: Id):
-        return id in self.pending or id in self.running or id in self.done
+        return id in self.js
 
-    def _job_resign(self, worker_id: Id, job_id: Id):
-        self.workers[worker_id].resign(job_id)
-        try:
-            r = self.running[job_id]
-            del self.running[job_id]
-            return r
-        except KeyError:
-            # todo: send a task to worker that it acknowledges but never completes
-            # todo: kill the worker
-            # todo: thsi should happen while resigning a task
-            print(self.running)
-            raise
+    def _job_assign(self, job_id: Id):
+        # todo redo all
 
-    def _job_assign(self, job: Job):
-        if job.id in self.pending:
-            del self.pending[job.id]
+        job = self.js._get_pending(job_id)
 
-        if job.id in self.done:
-            logging.getLogger('server.job.done').debug(job)
+        if job is None:
+            logging.getLogger('server.job.pending').error(f'[1] unknown {job_id}')
             return
 
-        selected = list(self.workers.values())
+        is_assigned = False
 
-        for worker in _random_start(selected):
-            if worker.capacity.is_available and worker.filter.match(job.body):
-                self.running[job.id] = job
-                self.workers[worker.id].assign(job.id)
-                self.workers[worker.id].capacity.current += 1
-
+        for worker in self.ws:
+            cap = self.ws.capacity_get(worker.id)
+            if cap.is_available and worker.filter.match(job.body):
+                self.js.assign(job.id, worker.id)
                 self.comm.job(worker.id, job)
-                self.pending_ack[job.id] = WaitingAck(JobKeeping(worker.id, job), self.config.min_acks)
-
+                is_assigned = True
                 break
 
-        if not self._job_known(job.id):
+        if is_assigned:
             logging.getLogger('server.job.pending').debug(job)
-            self.pending[job.id] = job
         else:
             logging.getLogger('server.job.match').debug(job)
-
-    def _job_done(self, job: Job):
-        logging.getLogger('server.job.done').debug(job)
-        self.done[job.id] = job
