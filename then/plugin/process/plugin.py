@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import List, Any
 
@@ -19,15 +20,26 @@ class ProcessTaskPoolChannel(TaskPoolChannel):
 
 class ProcessWorker(TaskPoolWorker):
     def message(self, task: Job) -> List[NextJob]:
-        print('xzec', task)
-        if task.task.val.get('b', None) == 'd':
-            ctr = task.task.val.get('ctr')
-            if ctr < 100:
-                return [NextJob(Id(uuid.uuid4().hex), Body({'b': 'd', 'ctr': ctr + 1}))]
+        try:
+            # todo how do we match the jobs to the plugin that executes them ?
+            # todo we could just pass the plugin to the worker executor
+            # we would somehow like to define a list of task executors that are called from there.
+            if task.task.val.get('b', None) == 'd':
+                ctr = task.task.val.get('ctr')
+                if ctr < 100:
+                    return [NextJob(Id(uuid.uuid4().hex), Body({'b': 'd', 'ctr': ctr + 1}))]
+                else:
+                    return []
             else:
                 return []
-        else:
-            return []
+        except:
+            logging.getLogger('then.plugin.process').exception(f'Unhandled with {task.id}')
+            return [
+                NextJob(
+                    Id(uuid.uuid4().hex),
+                    Body({'_error': True, 'rule': task.rule.val, 'body': task.body})
+                )
+            ]
 
 
 class ProcessWorkerPlugin(WorkerPlugin):
