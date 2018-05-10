@@ -526,6 +526,8 @@ class Queue:
         logging.getLogger('server.trace.ack').debug(f'{worker_id} {job_id}')
         self.js.running(job_id, worker_id)
 
+        self.ws.capacity_set(worker_id, capacity)
+
     def worker_job_nack(self, worker_id: Id, capacity: Capacity, job_id: Id):
         logging.getLogger('server.trace.nack').debug(f'{worker_id} {job_id}')
         if worker_id not in self.workers:
@@ -533,6 +535,8 @@ class Queue:
 
         if self.js.resign(job_id, worker_id):
             self._job_assign(job_id)
+
+        self.ws.capacity_set(worker_id, capacity)
 
     def worker_job_finish(self, worker_id: Id, capacity: Capacity, job_id: Id, payloads: List[NextJob]):
         logging.getLogger('server.trace.finish').debug(f'{worker_id} {job_id}')

@@ -3,6 +3,7 @@ import socket
 from typing import List, Any
 
 from then.impl.backend.udp.util import Pollable, _recv_parse_buffer
+from then.impl.serde.entity import capacity_json_to, worker_json_to, rule_json_to
 from then.impl.serde.util import deserialize_json, serialize_json, pack_bytes
 from then.server import Queue
 from then.struct import Structure, Id, Body
@@ -49,7 +50,12 @@ class TCPFrontendServer(Pollable):
                         client_sock.send(pack_bytes(serialize_json({'t': 'ja', 'i': msg['i'], 'o': True})))
                     elif msg['t'] == 'l':
                         client_sock.send(pack_bytes(serialize_json([
-                            {'i': x.id.id, 'f': x.filter.body.val, 'b': x.body.val} for x in self.s.list()
+                            rule_json_to(x) for x in self.s.list()
+                        ])))
+                    elif msg['t'] == 'w':
+                        client_sock.send(pack_bytes(serialize_json([
+                            worker_json_to(x, self.q.ws.capacity_get(x.id)) for x in self.q.ws
                         ])))
                     else:
                         logging.getLogger('tcp_front').error(str(msg))
+                        client_sock.close()

@@ -1,11 +1,13 @@
 import argparse
 import logging
 import socket
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from then.impl.backend.udp.server import set_logging
-from then.impl.serde.entity import rule_json_from
+from then.impl.serde.entity import rule_json_from, worker_json_from, capacity_json_from
 from then.impl.serde.util import deserialize_json, serialize_json, pack_bytes, unpack_bytes
+from then.runtime import Capacity
+from then.server import Worker
 from then.struct import Body, Id, deserialize_yaml
 
 
@@ -31,10 +33,10 @@ class FrontendTCPClient:
     def _recv(self):
         return deserialize_json(unpack_bytes(self.socket.recv(2 ** 22)))
 
-    def worker_list(self):
+    def worker_list(self) -> List[Tuple[Worker, Optional[Capacity]]]:
         self._send({'t': 'w'})
 
-        return sorted([rule_json_from(x) for x in self._recv()], key=lambda x: x.id)
+        return sorted([(worker_json_from(x), capacity_json_from(x['c'])) for x in self._recv()], key=lambda x: x[0].id)
 
     def rule_list(self):
         self._send({'t': 'l'})
